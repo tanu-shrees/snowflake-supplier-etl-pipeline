@@ -1,0 +1,85 @@
+
+    USE ROLE SYSADMIN;
+    USE WAREHOUSE SUPPLIER_TRANSFORM_WH;
+    USE DATABASE SUPPLIER_DW;
+    USE SCHEMA AUDIT;
+
+    -- ============================================================
+    -- FILE: 05_audit_tables.sql
+    -- PURPOSE: Audit and pipeline health tracking tables
+    -- ============================================================
+
+    -- 1) Pipeline execution log — one row per procedure run
+    CREATE OR REPLACE TABLE SUPPLIER_DW.AUDIT.PIPELINE_RUN_LOG (
+        RUN_ID              NUMBER AUTOINCREMENT START 1 INCREMENT 1,
+        TASK_NAME           VARCHAR(200),
+        PROCEDURE_NAME      VARCHAR(200),
+        START_TIME          TIMESTAMP_NTZ,
+        END_TIME            TIMESTAMP_NTZ,
+        ROWS_PROCESSED      NUMBER DEFAULT 0,
+        ROWS_INSERTED       NUMBER DEFAULT 0,
+        ROWS_UPDATED        NUMBER DEFAULT 0,
+        ROWS_REJECTED       NUMBER DEFAULT 0,
+        STATUS              VARCHAR(20),        -- SUCCESS, FAILED, NO_DATA
+        ERROR_MESSAGE       VARCHAR(4000),
+        CONSTRAINT PK_PIPELINE_RUN_LOG PRIMARY KEY (RUN_ID)
+    );
+
+    -- 2) Snowpipe ingestion tracker — monitor file loads
+    CREATE OR REPLACE TABLE SUPPLIER_DW.AUDIT.PIPE_LOAD_LOG (
+        LOG_ID              NUMBER AUTOINCREMENT START 1 INCREMENT 1,
+        PIPE_NAME           VARCHAR(200),
+        FILE_NAME           VARCHAR(500),
+        ROW_COUNT           NUMBER,
+        LOAD_STATUS         VARCHAR(30),        -- LOADED, PARTIALLY_LOADED, LOAD_FAILED
+        ERROR_COUNT         NUMBER DEFAULT 0,
+        FIRST_ERROR         VARCHAR(4000),
+        LOAD_TS             TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP(),
+        CONSTRAINT PK_PIPE_LOAD_LOG PRIMARY KEY (LOG_ID)
+    );
+
+    -- 3) Data quality summary — daily DQ snapshot
+    CREATE OR REPLACE TABLE SUPPLIER_DW.AUDIT.DQ_SUMMARY (
+        SUMMARY_ID          NUMBER AUTOINCREMENT START 1 INCREMENT 1,
+        CHECK_DATE          DATE DEFAULT CURRENT_DATE(),
+        TOTAL_RECORDS       NUMBER,
+        PASSED_RECORDS      NUMBER,
+        FAILED_RECORDS      NUMBER,
+        PASS_RATE_PCT       NUMBER(5,2),
+        TOP_FAILURE_REASON  VARCHAR(500),
+        CONSTRAINT PK_DQ_SUMMARY PRIMARY KEY (SUMMARY_ID)
+    );
+
+    -- Helpful views for dashboard/monitoring
+    CREATE OR REPLACE VIEW SUPPLIER_DW.AUDIT.VW_RECENT_RUNS AS
+    SELECT
+        RUN_ID,
+        TASK_NAME,
+        PROCEDURE_NAME,
+        START_TIME,
+        END_TIME,
+        DATEDIFF('second', START_TIME, END_TIME) AS DURATION_SECONDS,
+        ROWS_PROCESSED,
+        ROWS_INSERTED,
+        ROWS_UPDATED,
+        ROWS_REJECTED,
+        STATUS,
+        ERROR_MESSAGE
+    FROM SUPPLIER_DW.AUDIT.PIPELINE_RUN_LOG
+    ORDER BY START_TIME DESC;
+
+    CREATE OR REPLACE VIEW SUPPLIER_DW.AUDIT.VW_PIPELINE_HEALTH AS
+    SELECT
+        TASK_NAME,
+        COUNT(*) AS TOTAL_RUNS,
+        SUM(CASE WHEN STATUS = 'SUCCESS' THEN 1 ELSE 0 END) AS SUCCESS_COUNT,
+        SUM(CASE WHEN STATUS = 'FAILED' THEN 1 ELSE 0 END) AS FAILURE_COUNT,
+        ROUND(SUCCESS_COUNT * 100.0 / NULLIF(TOTAL_RUNS, 0), 2) AS SUCCESS_RATE_PCT,
+        AVG(DATEDIFF('second', START_TIME, END_TIME)) AS AVG_DURATION_SECONDS,
+        MAX(START_TIME) AS LAST_RUN_TIME,
+        SUM(ROWS_PROCESSED) AS TOTAL_ROWS_PROCESSED
+    FROM SUPPLIER_DW.AUDIT.PIPELINE_RUN_LOG
+    GROUP BY TASK_NAME;
+
+    -- Verification
+    SHOW TABLES IN SCHEMA SUPPLIER_DW.AUDIT;
